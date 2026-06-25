@@ -5,12 +5,12 @@ import pandas as pd
 # SECTION 1: APP CONFIGURATION & APP CONSTANTS
 # ==========================================
 st.set_page_config(
-    page_title="Jupiter Ed Attendance Analytics", 
+    page_title="Attendance Analytics", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("🏫 Jupiter Ed Attendance Analytics Dashboard")
+st.title("🏫 Jupiter Ed Attendance Analytics")
 st.markdown("---")
 
 # Data source configurations
@@ -23,23 +23,20 @@ GDRIVE_URL = f"https://docs.google.com/uc?export=download&id={FILE_ID}"
 # ==========================================
 @st.cache_data
 def load_and_clean_data(url):
-    """
-    Fetches raw CSV from Google Drive and enforces data types 
-    matching the validated 10-column schema.
-    """
     df = pd.read_csv(url)
     
-    # Enforce clean data types for reliable analysis
+    # Enforce clean data types
     df['StudentID'] = df['StudentID'].astype(str).str.strip()
     df['Date'] = pd.to_datetime(df['Date']).dt.date
     df['Period'] = df['Period'].astype(str).str.strip()
     df['Type'] = df['Type'].astype(str).str.strip()
     df['GradeLevel'] = df['GradeLevel'].astype(str).str.strip()
+    # Attendance column used to identify "Present" vs others
+    df['Attendance'] = df['Attendance'].astype(str).str.strip()
     
     return df
 
-# Run the ingestion layer
-with st.spinner("Streaming and processing 45,000+ attendance records..."):
+with st.spinner("Streaming attendance records..."):
     try:
         df_jupiter = load_and_clean_data(GDRIVE_URL)
     except Exception as e:
@@ -51,24 +48,10 @@ with st.spinner("Streaming and processing 45,000+ attendance records..."):
 # SECTION 3: ANALYTICS & LOGIC ENGINE
 # ==========================================
 
-# --- LOGIC 1: SINGLE-PERIOD SNIPERS ---
-# Isolate unexcused absences
-unexcused_df = df_jupiter[df_jupiter['Type'].str.lower().str.startswith('un', na=False)]
+# 1. Filter out "Present" records to isolate all types of absences/tardies
+absences_only_df = df_jupiter[df_jupiter['Attendance'].str.lower() != 'present'].copy()
 
-# Group by student and class to find repeat absence patterns across the 2 days
-sniper_groups = unexcused_df.groupby(
-    ['StudentID', 'Name', 'Period', 'CourseSectionNum', 'Teacher']
-).size().reset_index(name='Times_Missed')
-
-# Filter for kids who missed the EXACT same class on both days
-pattern_cutters = sniper_groups[sniper_groups['Times_Missed'] >= 2].sort_values(by='Period')
-
-
-# --- LOGIC 2: TOTAL ABSENCE LEADERBOARD ---
-# Filter out "Present" records to isolate all types of absences/tardies
-absences_only_df = df_jupiter[df_jupiter['Attendance'].str.lower() != 'present']
-
-# Create cross-tabulation to get total counts, broken down by type
+# 2. Create cross-tabulation to get total counts per student
 leaderboard = pd.crosstab(
     index=[absences_only_df['StudentID'], absences_only_df['Name']],
     columns=absences_only_df['Type']
@@ -79,95 +62,77 @@ unex_cols = [c for c in leaderboard.columns if c.lower().startswith('un')]
 ex_cols = [c for c in leaderboard.columns if not c.lower().startswith('un') and c not in ['StudentID', 'Name']]
 
 # Sum up total absences
-leaderboard['Unexcused Absences'] = leaderboard[unex_cols].sum(axis=1)
-leaderboard['Excused/Other Absences'] = leaderboard[ex_cols].sum(axis=1)
-leaderboard['Total Absences'] = leaderboard['Unexcused Absences'] + leaderboard['Excused/Other Absences']
+leaderboard['Unex'] = leaderboard[unex_cols].sum(axis=1)
+leaderboard['Ex/Other'] = leaderboard[ex_cols].sum(axis=1)
+leaderboard['Total Absences'] = leaderboard['Unex'] + leaderboard['Ex/Other']
 
-# Sort leaderboard by highest total absences down
+# Sort leaderboard by highest total absences first
 leaderboard = leaderboard.sort_values(by='Total Absences', ascending=False)
 
 
 # ==========================================
-# SECTION 4: USER INTERFACE & SIDEBAR FILTERS
+# SECTION 4: USER INTERFACE & DRILL-DOWN
 # ==========================================
 
-# --- SIDEBAR CONTROLS ---
-st.sidebar.header("🎯 Dashboard Filters")
-
+# --- SIDEBAR FILTERS ---
+st.sidebar.header("🎯 Filter Options")
 all_grades = sorted(df_jupiter['GradeLevel'].dropna().unique())
 selected_grades = st.sidebar.multiselect("Filter by Grade Level", options=all_grades)
 
-# Apply grade filters globally to our datasets if selected
 if selected_grades:
-    students_in_grade = df_jupiter[df_jupiter['GradeLevel'].isin(selected_grades)]['StudentID']
-    pattern_cutters = pattern_cutters[pattern_cutters['StudentID'].isin(students_in_grade)]
-    leaderboard = leaderboard[leaderboard['StudentID'].isin(students_in_grade)]
+    # Filter the leaderboard based on the sidebar selection
+    grade_ids = df_jupiter[df_jupiter['GradeLevel'].isin(selected_grades)]['StudentID'].unique()
+    leaderboard = leaderboard[leaderboard['StudentID'].isin(grade_ids)]
 
-st.sidebar.markdown("---")
-st.sidebar.info("💡 **Tip:** Deans can use the search feature inside the tables or select dropdowns to audit specific students.")
+# --- MAIN LEADERBOARD (Full Width) ---
+st.header("🏆 Absence Leaderboard")
+st.write("Ranking students by total accumulated absences (Excused + Unexcused) over the 2-day period.")
 
-
-# --- MAIN DISPLAY UI ---
-
-# High-Level Metric Cards
-st.subheader("📊 System Overview Metrics")
-metric_col1, metric_col2, metric_col3 = st.columns(3)
-with metric_col1:
-    st.metric(label="Total Rows Analyzed", value=f"{len(df_jupiter):,}")
-with metric_col2:
-    st.metric(label="Total Non-Present Events", value=f"{len(absences_only_df):,}")
-with metric_col3:
-    st.metric(label="Identified Pattern Cutters", value=f"{pattern_cutters['StudentID'].nunique()}")
+# Displaying Total Absences FIRST as requested
+st.dataframe(
+    leaderboard[['Total Absences', 'StudentID', 'Name', 'Unex', 'Ex/Other']], 
+    use_container_width=True,
+    hide_index=True
+)
 
 st.markdown("---")
 
-# Layout: Two columns for the Core Analytics Tables
-col_left, col_right = st.columns(2)
-
-with col_left:
-    st.header("🏆 Absence Leaderboard")
-    st.write("Students ranked by highest accumulated total absences over 2 days:")
-    st.dataframe(
-        leaderboard[['StudentID', 'Name', 'Unexcused Absences', 'Excused/Other Absences', 'Total Absences']], 
-        use_container_width=True,
-        hide_index=True
-    )
-
-with col_right:
-    st.header("🚨 Single-Period Snipers")
-    st.write("Students missed the *exact same class period* on both days:")
-    st.dataframe(
-        pattern_cutters[['StudentID', 'Name', 'Period', 'CourseSectionNum', 'Teacher']], 
-        use_container_width=True,
-        hide_index=True
-    )
-
-st.markdown("---")
-
-# --- NEW FEATURE: STUDENT DETAIL DRILL-DOWN ---
+# --- STUDENT DETAIL DRILL-DOWN ---
 st.header("🔍 Student Deep-Dive Profile Audit")
-st.write("Select or search a student below to instantly pull their complete 2-day attendance history.")
+st.write("Select a student to see exactly which periods they missed and a summary of their cutting habits.")
 
-# Create an easy search label array: "LastName, FirstName (ID: 12345)"
-student_list = (leaderboard['Name'] + " (ID: " + leaderboard['StudentID'] + ")").tolist()
+# Create selection list
+student_options = (leaderboard['Name'] + " (ID: " + leaderboard['StudentID'] + ")").tolist()
 
-if student_list:
-    selected_student_label = st.selectbox("Search Student Profile:", options=["-- Select a Student --"] + student_list)
+if student_options:
+    selected_student_label = st.selectbox("Search/Select Student:", options=["-- Select a Student --"] + student_options)
     
     if selected_student_label != "-- Select a Student --":
-        # Extract the Student ID from the label string
+        # Extract ID
         target_id = selected_student_label.split("(ID: ")[1].replace(")", "").strip()
         
-        # Filter raw data for just this student
+        # Pull data just for this student
         student_history = df_jupiter[df_jupiter['StudentID'] == target_id].sort_values(by=['Date', 'Period'])
-        
-        st.subheader(f"📋 Attendance Log for {selected_student_label}")
-        
-        # Display the custom interactive data log for this student
-        st.dataframe(
-            student_history[['Date', 'Period', 'CourseSectionNum', 'Attendance', 'Type', 'Teacher']],
-            use_container_width=True,
-            hide_index=True
-    )
+        student_absences = absences_only_df[absences_only_df['StudentID'] == target_id]
+
+        # UI Layout for Drill-Down
+        col_summary, col_log = st.columns([1, 2])
+
+        with col_summary:
+            st.subheader("📍 Absences by Period")
+            # Count absences per period
+            period_counts = student_absences.groupby('Period').size().reset_index(name='Times Missed')
+            st.dataframe(period_counts, hide_index=True, use_container_width=True)
+            
+            total_missed = period_counts['Times Missed'].sum()
+            st.info(f"**Total Missed Classes:** {total_missed}")
+
+        with col_log:
+            st.subheader("📅 Chronological Log")
+            st.dataframe(
+                student_history[['Date', 'Period', 'CourseSectionNum', 'Attendance', 'Type', 'Teacher']],
+                use_container_width=True,
+                hide_index=True
+            )
 else:
-    st.info("No students available to audit based on your sidebar filters.")
+    st.info("Select a grade from the sidebar to populate the list.")
