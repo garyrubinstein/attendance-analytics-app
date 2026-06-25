@@ -13,14 +13,8 @@ st.set_page_config(
 st.title("🏫 Jupiter Ed Attendance Analytics")
 st.markdown("---")
 
-# Data source configurations
-FILE_ID = "1e2KWmYSvt5sw38q5Rp6PrJ-QfepetWrQ"
-GDRIVE_URL = f"https://docs.google.com/uc?export=download&id={FILE_ID}"
-
-EXPECTED_HEADERS = [
-    'StudentID', 'Name', 'Date', 'Period', 'Attendance', 
-    'Teacher', 'GradeLevel', 'CourseSectionNum', 'Timestamp', 'Type'
-]
+# Your verified, public streaming web link:
+GDRIVE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkI_5b3FAWYjlvHXNhg_Z2edAc1mR1GnIc3OT1CDA6RrZRf0MzZ4GgtwOJ-ZQkFRI58FFQTuUWSmP3/pub?output=csv"
 
 
 # ==========================================
@@ -28,22 +22,18 @@ EXPECTED_HEADERS = [
 # ==========================================
 @st.cache_data
 def load_and_clean_data(url):
-    parse_method = "Standard Parser"
-    try:
-        df = pd.read_csv(url, skip_blank_lines=True)
-    except Exception:
-        parse_method = "Fallback Forced-Header Parser (Dropped Corrupt Rows)"
-        df = pd.read_csv(
-            url, 
-            names=EXPECTED_HEADERS, 
-            header=0,             
-            on_bad_lines='skip',  
-            engine='python'       
-        )
+    # Stream the raw CSV seamlessly from the web publish endpoint
+    df = pd.read_csv(url, skip_blank_lines=True, on_bad_lines='skip')
     
+    # Strip any accidental whitespace from headers
     df.columns = df.columns.str.strip()
     
-    # Enforce clean data types
+    # EMERGENCY CHECK: Ensure it's reading data and not an error page
+    if 'StudentID' not in df.columns or df.empty:
+        st.error("⚠️ **Data Stream Error:** The app could not locate the 'StudentID' column header.")
+        st.stop()
+        
+    # Enforce clean data types for the analytics metrics
     df['StudentID'] = df['StudentID'].astype(str).str.strip()
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
     df['Period'] = df['Period'].astype(str).str.strip()
@@ -51,9 +41,9 @@ def load_and_clean_data(url):
     df['GradeLevel'] = df['GradeLevel'].astype(str).str.strip()
     df['Attendance'] = df['Attendance'].astype(str).str.strip()
     
-    return df, parse_method
+    return df, "Verified Web-Published CSV Streamer"
 
-with st.spinner("Streaming, parsing, and repairing attendance records..."):
+with st.spinner("Streaming attendance records from Google Drive..."):
     try:
         df_jupiter, active_parser = load_and_clean_data(GDRIVE_URL)
     except Exception as e:
@@ -150,7 +140,7 @@ else:
 st.markdown("<br><br><br>", unsafe_allow_html=True)
 st.markdown("---")
 
-# --- NEW FEATURE: DYNAMIC DEBUG WINDOW ---
+# --- SYSTEM DIAGNOSTICS DETAILED DRAWER ---
 with st.expander("🛠️ System Diagnostics & Metadata (Debug Mode)"):
     st.subheader("📁 Ingestion File Specs")
     
