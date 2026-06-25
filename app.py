@@ -213,4 +213,18 @@ with st.expander("🛠️ System Diagnostics & Metadata (Debug Mode)"):
     with col_db2:
         st.metric("Global Column Count", len(df_jupiter.columns))
     with col_db3:
-        st.metric("Absence / Tardy
+        st.metric("Absence / Tardy Events Isolated", f"{len(absences_only_df):,}")
+        
+    st.markdown("**Parser Configuration:**")
+    st.code(active_parser)
+    
+    st.markdown("**Parsed Column Headers List:**")
+    st.code(str(list(df_jupiter.columns)))
+    
+    st.markdown("**Global Data Frame Data Types (Schema):**")
+    schema_df = pd.DataFrame({
+        "Pandas Data Type": df_jupiter.dtypes.astype(str),
+        "Non-Null Value Count": df_jupiter.count(),
+        "Missing/Null Values": df_jupiter.isnull().sum()
+    })
+    st.dataframe(schema_df, use_container_width=True)
