@@ -23,24 +23,33 @@ GDRIVE_URL = f"https://docs.google.com/uc?export=download&id={FILE_ID}"
 # ==========================================
 @st.cache_data
 def load_and_clean_data(url):
-    df = pd.read_csv(url)
+    # Enforce engine='python' and skip corrupt rows dynamically 
+    # to handle raw export noise gracefully
+    df = pd.read_csv(
+        url, 
+        on_bad_lines='skip', 
+        engine='python'
+    )
+    
+    # Clean up column names to strip out hidden spaces or characters
+    df.columns = df.columns.str.strip()
     
     # Enforce clean data types
     df['StudentID'] = df['StudentID'].astype(str).str.strip()
-    df['Date'] = pd.to_datetime(df['Date']).dt.date
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
     df['Period'] = df['Period'].astype(str).str.strip()
     df['Type'] = df['Type'].astype(str).str.strip()
     df['GradeLevel'] = df['GradeLevel'].astype(str).str.strip()
-    # Attendance column used to identify "Present" vs others
     df['Attendance'] = df['Attendance'].astype(str).str.strip()
     
     return df
 
-with st.spinner("Streaming attendance records..."):
+with st.spinner("Streaming and repairing attendance records..."):
     try:
         df_jupiter = load_and_clean_data(GDRIVE_URL)
     except Exception as e:
         st.error(f"❌ Data ingestion failed: {e}")
+        st.info("💡 Pro-tip: If this still fails, we may need to tell Python to skip the first few title rows.")
         st.stop()
 
 
@@ -61,7 +70,7 @@ leaderboard = pd.crosstab(
 unex_cols = [c for c in leaderboard.columns if c.lower().startswith('un')]
 ex_cols = [c for c in leaderboard.columns if not c.lower().startswith('un') and c not in ['StudentID', 'Name']]
 
-# Sum up total absences
+# Sum up total absences safely
 leaderboard['Unex'] = leaderboard[unex_cols].sum(axis=1)
 leaderboard['Ex/Other'] = leaderboard[ex_cols].sum(axis=1)
 leaderboard['Total Absences'] = leaderboard['Unex'] + leaderboard['Ex/Other']
@@ -80,7 +89,6 @@ all_grades = sorted(df_jupiter['GradeLevel'].dropna().unique())
 selected_grades = st.sidebar.multiselect("Filter by Grade Level", options=all_grades)
 
 if selected_grades:
-    # Filter the leaderboard based on the sidebar selection
     grade_ids = df_jupiter[df_jupiter['GradeLevel'].isin(selected_grades)]['StudentID'].unique()
     leaderboard = leaderboard[leaderboard['StudentID'].isin(grade_ids)]
 
@@ -88,7 +96,6 @@ if selected_grades:
 st.header("🏆 Absence Leaderboard")
 st.write("Ranking students by total accumulated absences (Excused + Unexcused) over the 2-day period.")
 
-# Displaying Total Absences FIRST as requested
 st.dataframe(
     leaderboard[['Total Absences', 'StudentID', 'Name', 'Unex', 'Ex/Other']], 
     use_container_width=True,
@@ -101,26 +108,21 @@ st.markdown("---")
 st.header("🔍 Student Deep-Dive Profile Audit")
 st.write("Select a student to see exactly which periods they missed and a summary of their cutting habits.")
 
-# Create selection list
 student_options = (leaderboard['Name'] + " (ID: " + leaderboard['StudentID'] + ")").tolist()
 
 if student_options:
     selected_student_label = st.selectbox("Search/Select Student:", options=["-- Select a Student --"] + student_options)
     
     if selected_student_label != "-- Select a Student --":
-        # Extract ID
         target_id = selected_student_label.split("(ID: ")[1].replace(")", "").strip()
         
-        # Pull data just for this student
         student_history = df_jupiter[df_jupiter['StudentID'] == target_id].sort_values(by=['Date', 'Period'])
         student_absences = absences_only_df[absences_only_df['StudentID'] == target_id]
 
-        # UI Layout for Drill-Down
         col_summary, col_log = st.columns([1, 2])
 
         with col_summary:
             st.subheader("📍 Absences by Period")
-            # Count absences per period
             period_counts = student_absences.groupby('Period').size().reset_index(name='Times Missed')
             st.dataframe(period_counts, hide_index=True, use_container_width=True)
             
