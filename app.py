@@ -17,20 +17,33 @@ st.markdown("---")
 FILE_ID = "1e2KWmYSvt5sw38q5Rp6PrJ-QfepetWrQ"
 GDRIVE_URL = f"https://docs.google.com/uc?export=download&id={FILE_ID}"
 
+EXPECTED_HEADERS = [
+    'StudentID', 'Name', 'Date', 'Period', 'Attendance', 
+    'Teacher', 'GradeLevel', 'CourseSectionNum', 'Timestamp', 'Type'
+]
+
 
 # ==========================================
 # SECTION 2: DATA INGESTION & CLEANING LAYER
 # ==========================================
 @st.cache_data
 def load_and_clean_data(url):
-    # skip_blank_lines=True ensures that trailing empty rows at the bottom 
-    # of the Jupiter export don't crash the parser
-    df = pd.read_csv(url, skip_blank_lines=True)
+    parse_method = "Standard Parser"
+    try:
+        df = pd.read_csv(url, skip_blank_lines=True)
+    except Exception:
+        parse_method = "Fallback Forced-Header Parser (Dropped Corrupt Rows)"
+        df = pd.read_csv(
+            url, 
+            names=EXPECTED_HEADERS, 
+            header=0,             
+            on_bad_lines='skip',  
+            engine='python'       
+        )
     
-    # Strip any accidental whitespace from the column headers themselves
     df.columns = df.columns.str.strip()
     
-    # Enforce clean data types based on your exact working headers
+    # Enforce clean data types
     df['StudentID'] = df['StudentID'].astype(str).str.strip()
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
     df['Period'] = df['Period'].astype(str).str.strip()
@@ -38,13 +51,13 @@ def load_and_clean_data(url):
     df['GradeLevel'] = df['GradeLevel'].astype(str).str.strip()
     df['Attendance'] = df['Attendance'].astype(str).str.strip()
     
-    return df
+    return df, parse_method
 
-with st.spinner("Streaming attendance records from Google Drive..."):
+with st.spinner("Streaming, parsing, and repairing attendance records..."):
     try:
-        df_jupiter = load_and_clean_data(GDRIVE_URL)
+        df_jupiter, active_parser = load_and_clean_data(GDRIVE_URL)
     except Exception as e:
-        st.error(f"❌ Data ingestion failed: {e}")
+        st.error(f"❌ Structural Ingestion Failure: {e}")
         st.stop()
 
 
@@ -91,7 +104,6 @@ if selected_grades:
 st.header("🏆 Absence Leaderboard")
 st.write("Ranking students by total accumulated absences (Excused + Unexcused) over the 2-day period.")
 
-# Displaying Total Absences FIRST as requested
 st.dataframe(
     leaderboard[['Total Absences', 'StudentID', 'Name', 'Unex', 'Ex/Other']], 
     use_container_width=True,
@@ -110,14 +122,11 @@ if student_options:
     selected_student_label = st.selectbox("Search/Select Student:", options=["-- Select a Student --"] + student_options)
     
     if selected_student_label != "-- Select a Student --":
-        # Extract ID
         target_id = selected_student_label.split("(ID: ")[1].replace(")", "").strip()
         
-        # Pull data just for this student
         student_history = df_jupiter[df_jupiter['StudentID'] == target_id].sort_values(by=['Date', 'Period'])
         student_absences = absences_only_df[absences_only_df['StudentID'] == target_id]
 
-        # UI Layout for Drill-Down
         col_summary, col_log = st.columns([1, 2])
 
         with col_summary:
@@ -137,3 +146,35 @@ if student_options:
             )
 else:
     st.info("Select a grade from the sidebar to populate the list.")
+
+st.markdown("<br><br><br>", unsafe_allow_html=True)
+st.markdown("---")
+
+# --- NEW FEATURE: DYNAMIC DEBUG WINDOW ---
+with st.expander("🛠️ System Diagnostics & Metadata (Debug Mode)"):
+    st.subheader("📁 Ingestion File Specs")
+    
+    col_db1, col_db2, col_db3 = st.columns(3)
+    with col_db1:
+        st.metric("Total Row Entries In Memory", f"{len(df_jupiter):,}")
+    with col_db2:
+        st.metric("Detected Column Count", len(df_jupiter.columns))
+    with col_db3:
+        st.metric("Absence / Tardy Events Isolated", f"{len(absences_only_df):,}")
+        
+    st.markdown("**Parser Status:**")
+    st.code(active_parser)
+    
+    st.markdown("**Parsed Column Headers List:**")
+    st.code(str(list(df_jupiter.columns)))
+    
+    st.markdown("**Data Type Verification (Schema):**")
+    schema_df = pd.DataFrame({
+        "Pandas Data Type": df_jupiter.dtypes.astype(str),
+        "Non-Null Value Count": df_jupiter.count(),
+        "Missing/Null Values": df_jupiter.isnull().sum()
+    })
+    st.dataframe(schema_df, use_container_width=True)
+    
+    st.markdown("**Raw In-Memory Head Preview (First 5 Rows):**")
+    st.dataframe(df_jupiter.head(5), use_container_width=True)
