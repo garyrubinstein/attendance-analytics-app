@@ -1,63 +1,116 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="Data Connection Debugger", layout="wide")
-st.title("⚙️ Jupiter Ed File Connection Debugger")
-st.write("This tool verifies that Streamlit can talk to Google Drive and inspects the raw file structure.")
+# ==========================================
+# SECTION 1: APP CONFIGURATION & APP CONSTANTS
+# ==========================================
+st.set_page_config(
+    page_title="Jupiter Ed Attendance Analytics", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# 1. Change the URL structure to use the direct file download endpoint
+st.title("🏫 Jupiter Ed Attendance Analytics Dashboard")
+st.markdown("---")
+
+# Data source configurations
 FILE_ID = "1e2KWmYSvt5sw38q5Rp6PrJ-QfepetWrQ"
-gdrive_url = f"https://docs.google.com/uc?export=download&id={FILE_ID}"
+GDRIVE_URL = f"https://docs.google.com/uc?export=download&id={FILE_ID}"
 
-# Display the download URL we are testing
-st.info(f"Targeting URL: {gdrive_url}")
 
+# ==========================================
+# SECTION 2: DATA INGESTION & CLEANING LAYER
+# ==========================================
 @st.cache_data
-def load_raw_data():
-    # Load the file completely raw with no cleanup to see what Jupiter actually exported
-    df = pd.read_csv(gdrive_url)
+def load_and_clean_data(url):
+    """
+    Fetches raw CSV from Google Drive and enforces data types 
+    matching the validated 10-column schema.
+    """
+    df = pd.read_csv(url)
+    
+    # Enforce clean data types for reliable analysis
+    df['StudentID'] = df['StudentID'].astype(str).str.strip()
+    df['Date'] = pd.to_datetime(df['Date']).dt.date
+    df['Period'] = df['Period'].astype(str).str.strip()
+    df['Type'] = df['Type'].astype(str).str.strip()
+    df['GradeLevel'] = df['GradeLevel'].astype(str).str.strip()
+    
     return df
 
-# Attempt to load the data
-with st.spinner("Attempting to stream file from Google Drive..."):
+# Run the ingestion layer
+with st.spinner("Streaming and processing 45,000+ attendance records..."):
     try:
-        df_raw = load_raw_data()
-        st.success("✅ Connection Successful! Data pulled from Google Drive.")
+        df_jupiter = load_and_clean_data(GDRIVE_URL)
     except Exception as e:
-        st.error("❌ Connection Failed.")
-        st.subheader("Error Details:")
-        st.code(str(e))
-        st.warning("Troubleshooting step: Double-check that 'Anyone with the link can view' is enabled for this file in your Google Drive.")
+        st.error(f"❌ Data ingestion failed: {e}")
         st.stop()
 
-# --- DEBUG INFO WINDOWS ---
 
-st.header("📊 File Metrics")
-col1, col2 = st.columns(2)
-with col1:
-    st.metric(label="Total Rows Detected", value=f"{len(df_raw):,}")
-with col2:
-    st.metric(label="Total Columns Detected", value=len(df_raw.columns))
+# ==========================================
+# SECTION 3: ANALYTICS & LOGIC ENGINE
+# ==========================================
 
-# 1. Inspect the Column Headers
-st.header("📋 Column Headers Inspection")
-st.write("These are the exact column text strings found in your file. Check for typos or extra spaces:")
-columns_list = list(df_raw.columns)
-st.code(str(columns_list))
+# 1. Isolate unexcused absences
+# (Slices the data to look at rows where 'Type' starts with 'un' or 'Un')
+unexcused_df = df_jupiter[df_jupiter['Type'].str.lower().str.startswith('un', na=False)]
 
-# 2. Inspect Data Types and Missing Values
-st.header("🔬 Data Schema & Completeness")
-st.write("This shows what format Pandas thinks your data is, and if any rows have empty values.")
+# 2. Calculate the Single-Period Sniper logic
+# Groups by student and specific class to find repeat absence patterns across the 2 days
+sniper_groups = unexcused_df.groupby(
+    ['StudentID', 'Name', 'Period', 'CourseSectionNum', 'Teacher']
+).size().reset_index(name='Times_Missed')
 
-# Build a quick summary dataframe of the columns
-debug_summary = pd.DataFrame({
-    "Data Type": df_raw.dtypes.astype(str),
-    "Non-Null Count": df_raw.count(),
-    "Missing Values": df_raw.isnull().sum()
-})
-st.dataframe(debug_summary, use_container_width=True)
+# Filter for kids who missed the EXACT same class on both days
+pattern_cutters = sniper_groups[sniper_groups['Times_Missed'] >= 2].sort_values(by='Period')
 
-# 3. Preview the Raw Rows
-st.header("👀 Raw Data Preview (First 20 Rows)")
-st.write("This is a direct look at the first 20 rows inside the memory dataframe:")
-st.dataframe(df_raw.head(20), use_container_width=True)
+
+# ==========================================
+# SECTION 4: USER INTERFACE & SIDEBAR FILTERS
+# ==========================================
+
+# --- SIDEBAR CONTROLS ---
+st.sidebar.header("🎯 Dashboard Filters")
+st.sidebar.write("Use these options to narrow down the target list.")
+
+# Grade Level Filter
+all_grades = sorted(df_jupiter['GradeLevel'].dropna().unique())
+selected_grades = st.sidebar.multiselect("Filter by Grade Level", options=all_grades)
+
+# Apply filter to our final analytics array if selected
+if selected_grades:
+    # Check which students belong to the selected grades
+    students_in_grade = df_jupiter[df_jupiter['GradeLevel'].isin(selected_grades)]['StudentID']
+    pattern_cutters = pattern_cutters[pattern_cutters['StudentID'].isin(students_in_grade)]
+
+st.sidebar.markdown("---")
+st.sidebar.info("💡 **Tip:** This dashboard dynamically handles your 45k data export completely in-memory for the deans.")
+
+
+# --- MAIN DISPLAY UI ---
+
+# High-Level Metric Cards
+st.subheader("📊 System Overview Metrics")
+metric_col1, metric_col2, metric_col3 = st.columns(3)
+
+with metric_col1:
+    st.metric(label="Total Rows Analyzed", value=f"{len(df_jupiter):,}")
+with metric_col2:
+    st.metric(label="Total Unexcused Absence Cuts", value=f"{len(unexcused_df):,}")
+with metric_col3:
+    st.metric(label="Identified Pattern Cutters (2/2 Days)", value=f"{pattern_cutters['StudentID'].nunique()}")
+
+st.markdown("---")
+
+# Main Interactive Data Table
+st.header("🚨 Target Flag: Single-Period Snipers")
+st.write("Students marked **Unexcused Absent** for the *exact same class period* on both days:")
+
+if not pattern_cutters.empty:
+    st.dataframe(
+        pattern_cutters[['StudentID', 'Name', 'Period', 'CourseSectionNum', 'Teacher']], 
+        use_container_width=True,
+        hide_index=True
+    )
+else:
+    st.info("No students match this cutting profile under the selected filters.")
