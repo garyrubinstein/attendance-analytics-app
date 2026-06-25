@@ -23,18 +23,14 @@ GDRIVE_URL = f"https://docs.google.com/uc?export=download&id={FILE_ID}"
 # ==========================================
 @st.cache_data
 def load_and_clean_data(url):
-    # Enforce engine='python' and skip corrupt rows dynamically 
-    # to handle raw export noise gracefully
-    df = pd.read_csv(
-        url, 
-        on_bad_lines='skip', 
-        engine='python'
-    )
+    # skip_blank_lines=True ensures that trailing empty rows at the bottom 
+    # of the Jupiter export don't crash the parser
+    df = pd.read_csv(url, skip_blank_lines=True)
     
-    # Clean up column names to strip out hidden spaces or characters
+    # Strip any accidental whitespace from the column headers themselves
     df.columns = df.columns.str.strip()
     
-    # Enforce clean data types
+    # Enforce clean data types based on your exact working headers
     df['StudentID'] = df['StudentID'].astype(str).str.strip()
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
     df['Period'] = df['Period'].astype(str).str.strip()
@@ -44,12 +40,11 @@ def load_and_clean_data(url):
     
     return df
 
-with st.spinner("Streaming and repairing attendance records..."):
+with st.spinner("Streaming attendance records from Google Drive..."):
     try:
         df_jupiter = load_and_clean_data(GDRIVE_URL)
     except Exception as e:
         st.error(f"❌ Data ingestion failed: {e}")
-        st.info("💡 Pro-tip: If this still fails, we may need to tell Python to skip the first few title rows.")
         st.stop()
 
 
@@ -66,7 +61,7 @@ leaderboard = pd.crosstab(
     columns=absences_only_df['Type']
 ).reset_index()
 
-# Dynamically find columns that represent unexcused vs excused
+# Dynamically find columns that represent unexcused vs excused marks
 unex_cols = [c for c in leaderboard.columns if c.lower().startswith('un')]
 ex_cols = [c for c in leaderboard.columns if not c.lower().startswith('un') and c not in ['StudentID', 'Name']]
 
@@ -96,6 +91,7 @@ if selected_grades:
 st.header("🏆 Absence Leaderboard")
 st.write("Ranking students by total accumulated absences (Excused + Unexcused) over the 2-day period.")
 
+# Displaying Total Absences FIRST as requested
 st.dataframe(
     leaderboard[['Total Absences', 'StudentID', 'Name', 'Unex', 'Ex/Other']], 
     use_container_width=True,
@@ -114,11 +110,14 @@ if student_options:
     selected_student_label = st.selectbox("Search/Select Student:", options=["-- Select a Student --"] + student_options)
     
     if selected_student_label != "-- Select a Student --":
+        # Extract ID
         target_id = selected_student_label.split("(ID: ")[1].replace(")", "").strip()
         
+        # Pull data just for this student
         student_history = df_jupiter[df_jupiter['StudentID'] == target_id].sort_values(by=['Date', 'Period'])
         student_absences = absences_only_df[absences_only_df['StudentID'] == target_id]
 
+        # UI Layout for Drill-Down
         col_summary, col_log = st.columns([1, 2])
 
         with col_summary:
