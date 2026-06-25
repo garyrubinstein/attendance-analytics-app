@@ -26,10 +26,11 @@ FOLDER_ID = "16HLYelRNBvw3rcon9ADRElpPrn5mB_6Q"
 @st.cache_data(ttl=3600)  # Caches data for 1 hour to keep it snappy, then re-scans the folder
 def load_and_stitch_folder(folder_id):
     all_dataframes = []
+    ingested_files_log = []
     
     try:
-        # Use gdown to download all files from your shared folder into the cloud container
-        files = gdown.download_folder(id=folder_id, quiet=True, remaining_ok=True)
+        # Fixed: Removed the command-line keyword 'remaining_ok' to resolve the exception
+        files = gdown.download_folder(id=folder_id, quiet=True)
         
         if not files:
             st.error("⚠️ **Folder Error:** No files found in the Google Drive folder. Ensure your CSV files are dropped inside.")
@@ -42,9 +43,14 @@ def load_and_stitch_folder(folder_id):
                 df_chunk = pd.read_csv(file, skip_blank_lines=True, on_bad_lines='skip')
                 df_chunk.columns = df_chunk.columns.str.strip()
                 
-                # Verify this file actually belongs to the dataset
+                # Verify this file actually belongs to the dataset structure
                 if 'StudentID' in df_chunk.columns:
                     all_dataframes.append(df_chunk)
+                    ingested_files_log.append({
+                        "File Name": os.path.basename(file),
+                        "Rows Found": len(df_chunk),
+                        "Columns Found": len(df_chunk.columns)
+                    })
                     
     except Exception as e:
         st.error(f"❌ Critical Folder Ingestion Failure: {e}")
@@ -65,10 +71,10 @@ def load_and_stitch_folder(folder_id):
     master_df['GradeLevel'] = master_df['GradeLevel'].astype(str).str.strip()
     master_df['Attendance'] = master_df['Attendance'].astype(str).str.strip()
     
-    return master_df, f"Stitched Folder Streamer ({len(all_dataframes)} CSV files parsed)"
+    return master_df, "Stitched Folder Streamer (Fixed)", ingested_files_log
 
 with st.spinner("Scanning Google Drive folder and compiling all attendance exports..."):
-    df_jupiter, active_parser = load_and_stitch_folder(FOLDER_ID)
+    df_jupiter, active_parser, file_diagnostics = load_and_stitch_folder(FOLDER_ID)
 
 
 # ==========================================
@@ -187,31 +193,24 @@ else:
 st.markdown("<br><br><br>", unsafe_allow_html=True)
 st.markdown("---")
 
-# --- SYSTEM DIAGNOSTICS DETAILED DRAWER ---
+
+# ==========================================
+# DEBUG DRAWER WITH RE-BUILT LOG AUDITOR
+# ==========================================
 with st.expander("🛠️ System Diagnostics & Metadata (Debug Mode)"):
-    st.subheader("📁 Ingestion File Specs")
+    st.subheader("📂 Folder Manifest Audit")
+    st.write("Below is a real-time list of individual CSV files the script successfully extracted from the Google Drive folder:")
+    
+    # Display individual file stats inside the debug drawer
+    st.dataframe(pd.DataFrame(file_diagnostics), use_container_width=True, hide_index=True)
+    
+    st.markdown("---")
+    st.subheader("📁 Global Ingestion File Specs")
     
     col_db1, col_db2, col_db3 = st.columns(3)
     with col_db1:
-        st.metric("Total Row Entries In Memory", f"{len(df_jupiter):,}")
+        st.metric("Total Blended Rows in Memory", f"{len(df_jupiter):,}")
     with col_db2:
-        st.metric("Detected Column Count", len(df_jupiter.columns))
+        st.metric("Global Column Count", len(df_jupiter.columns))
     with col_db3:
-        st.metric("Absence / Tardy Events Isolated", f"{len(absences_only_df):,}")
-        
-    st.markdown("**Parser Status:**")
-    st.code(active_parser)
-    
-    st.markdown("**Parsed Column Headers List:**")
-    st.code(str(list(df_jupiter.columns)))
-    
-    st.markdown("**Data Type Verification (Schema):**")
-    schema_df = pd.DataFrame({
-        "Pandas Data Type": df_jupiter.dtypes.astype(str),
-        "Non-Null Value Count": df_jupiter.count(),
-        "Missing/Null Values": df_jupiter.isnull().sum()
-    })
-    st.dataframe(schema_df, use_container_width=True)
-    
-    st.markdown("**Raw In-Memory Head Preview (First 5 Rows):**")
-    st.dataframe(df_jupiter.head(5), use_container_width=True)
+        st.metric("Absence / Tardy
