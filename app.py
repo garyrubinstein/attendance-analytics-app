@@ -1,5 +1,8 @@
 import streamlit as st
 import pandas as pd
+import math
+import gdown
+import os
 
 # ==========================================
 # SECTION 1: APP CONFIGURATION & APP CONSTANTS
@@ -13,42 +16,59 @@ st.set_page_config(
 st.title("🏫 Jupiter Ed Attendance Analytics")
 st.markdown("---")
 
-# Your verified, public streaming web link:
-GDRIVE_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQkI_5b3FAWYjlvHXNhg_Z2edAc1mR1GnIc3OT1CDA6RrZRf0MzZ4GgtwOJ-ZQkFRI58FFQTuUWSmP3/pub?output=csv"
+# Your live, verified Google Drive Folder ID
+FOLDER_ID = "16HLYelRNBvw3rcon9ADRElpPrn5mB_6Q" 
 
 
 # ==========================================
 # SECTION 2: DATA INGESTION & CLEANING LAYER
 # ==========================================
-@st.cache_data
-def load_and_clean_data(url):
-    # Stream the raw CSV seamlessly from the web publish endpoint
-    df = pd.read_csv(url, skip_blank_lines=True, on_bad_lines='skip')
+@st.cache_data(ttl=3600)  # Caches data for 1 hour to keep it snappy, then re-scans the folder
+def load_and_stitch_folder(folder_id):
+    all_dataframes = []
     
-    # Strip any accidental whitespace from headers
-    df.columns = df.columns.str.strip()
-    
-    # EMERGENCY CHECK: Ensure it's reading data and not an error page
-    if 'StudentID' not in df.columns or df.empty:
-        st.error("⚠️ **Data Stream Error:** The app could not locate the 'StudentID' column header.")
+    try:
+        # Use gdown to download all files from your shared folder into the cloud container
+        files = gdown.download_folder(id=folder_id, quiet=True, remaining_ok=True)
+        
+        if not files:
+            st.error("⚠️ **Folder Error:** No files found in the Google Drive folder. Ensure your CSV files are dropped inside.")
+            st.stop()
+            
+        # Loop through every file that was downloaded into the container
+        for file in files:
+            if file.endswith('.csv'):
+                # Read the individual CSV file safely
+                df_chunk = pd.read_csv(file, skip_blank_lines=True, on_bad_lines='skip')
+                df_chunk.columns = df_chunk.columns.str.strip()
+                
+                # Verify this file actually belongs to the dataset
+                if 'StudentID' in df_chunk.columns:
+                    all_dataframes.append(df_chunk)
+                    
+    except Exception as e:
+        st.error(f"❌ Critical Folder Ingestion Failure: {e}")
+        st.stop()
+
+    if not all_dataframes:
+        st.error("⚠️ **Data Alignment Error:** Found files in the folder, but none contained a valid 'StudentID' column.")
         st.stop()
         
-    # Enforce clean data types for the analytics metrics
-    df['StudentID'] = df['StudentID'].astype(str).str.strip()
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
-    df['Period'] = df['Period'].astype(str).str.strip()
-    df['Type'] = df['Type'].astype(str).str.strip()
-    df['GradeLevel'] = df['GradeLevel'].astype(str).str.strip()
-    df['Attendance'] = df['Attendance'].astype(str).str.strip()
+    # Stitch all separate CSV files together into one giant master DataFrame
+    master_df = pd.concat(all_dataframes, ignore_index=True)
     
-    return df, "Verified Web-Published CSV Streamer"
+    # Enforce clean data types over the compiled million-row matrix
+    master_df['StudentID'] = master_df['StudentID'].astype(str).str.strip()
+    master_df['Date'] = pd.to_datetime(master_df['Date'], errors='coerce').dt.date
+    master_df['Period'] = master_df['Period'].astype(str).str.strip()
+    master_df['Type'] = master_df['Type'].astype(str).str.strip()
+    master_df['GradeLevel'] = master_df['GradeLevel'].astype(str).str.strip()
+    master_df['Attendance'] = master_df['Attendance'].astype(str).str.strip()
+    
+    return master_df, f"Stitched Folder Streamer ({len(all_dataframes)} CSV files parsed)"
 
-with st.spinner("Streaming attendance records from Google Drive..."):
-    try:
-        df_jupiter, active_parser = load_and_clean_data(GDRIVE_URL)
-    except Exception as e:
-        st.error(f"❌ Structural Ingestion Failure: {e}")
-        st.stop()
+with st.spinner("Scanning Google Drive folder and compiling all attendance exports..."):
+    df_jupiter, active_parser = load_and_stitch_folder(FOLDER_ID)
 
 
 # ==========================================
@@ -78,7 +98,7 @@ leaderboard = leaderboard.sort_values(by='Total Absences', ascending=False)
 
 
 # ==========================================
-# SECTION 4: USER INTERFACE & DRILL-DOWN
+# SECTION 4: USER INTERFACE & DRILL-DOWN (WITH PAGINATION)
 # ==========================================
 
 # --- SIDEBAR FILTERS ---
@@ -90,15 +110,42 @@ if selected_grades:
     grade_ids = df_jupiter[df_jupiter['GradeLevel'].isin(selected_grades)]['StudentID'].unique()
     leaderboard = leaderboard[leaderboard['StudentID'].isin(grade_ids)]
 
-# --- MAIN LEADERBOARD (Full Width) ---
+# --- PAGINATION FEATURE FOR THE LEADERBOARD ---
 st.header("🏆 Absence Leaderboard")
-st.write("Ranking students by total accumulated absences (Excused + Unexcused) over the 2-day period.")
 
-st.dataframe(
-    leaderboard[['Total Absences', 'StudentID', 'Name', 'Unex', 'Ex/Other']], 
-    use_container_width=True,
-    hide_index=True
-)
+total_students = len(leaderboard)
+page_size = 20
+
+if total_students > 0:
+    total_pages = math.ceil(total_students / page_size)
+    
+    page_options = []
+    for i in range(total_pages):
+        start_rank = (i * page_size) + 1
+        end_rank = min((i + 1) * page_size, total_students)
+        if i == 0:
+            page_options.append(f"🥇 Top 20 (Ranks 1-{end_rank})")
+        else:
+            page_options.append(f"📋 Ranks {start_rank}-{end_rank}")
+            
+    col_selector, _ = st.columns([1, 2])
+    with col_selector:
+        selected_page_label = st.selectbox("Select Leaderboard View window:", options=page_options)
+    
+    selected_page_index = page_options.index(selected_page_label)
+    start_idx = selected_page_index * page_size
+    end_idx = start_idx + page_size
+    
+    paginated_df = leaderboard.iloc[start_idx:end_idx]
+    st.write(f"Showing ranks {start_idx + 1} to {min(end_idx, total_students)} out of {total_students} total flagged records.")
+    
+    st.dataframe(
+        paginated_df[['Total Absences', 'StudentID', 'Name', 'Unex', 'Ex/Other']], 
+        use_container_width=True,
+        hide_index=True
+    )
+else:
+    st.info("No records found matching current sidebar criteria.")
 
 st.markdown("---")
 
