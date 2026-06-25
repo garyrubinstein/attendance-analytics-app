@@ -76,7 +76,7 @@ leaderboard = pd.crosstab(
 
 # Dynamically find columns that represent unexcused vs excused
 unex_cols = [c for c in leaderboard.columns if c.lower().startswith('un')]
-ex_cols = [c for c in leaderboard.columns if not c.lower().startswith('un') and c体育 not in ['StudentID', 'Name']]
+ex_cols = [c for c in leaderboard.columns if not c.lower().startswith('un') and c not in ['StudentID', 'Name']]
 
 # Sum up total absences
 leaderboard['Unexcused Absences'] = leaderboard[unex_cols].sum(axis=1)
