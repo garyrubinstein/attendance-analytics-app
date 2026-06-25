@@ -5,9 +5,9 @@ st.set_page_config(page_title="Data Connection Debugger", layout="wide")
 st.title("⚙️ Jupiter Ed File Connection Debugger")
 st.write("This tool verifies that Streamlit can talk to Google Drive and inspects the raw file structure.")
 
-# 1. Your exact file ID from Google Drive
+# 1. Change the URL structure to use the direct file download endpoint
 FILE_ID = "1e2KWmYSvt5sw38q5Rp6PrJ-QfepetWrQ"
-gdrive_url = f"https://docs.google.com/spreadsheets/d/{FILE_ID}/export?format=csv"
+gdrive_url = f"https://docs.google.com/uc?export=download&id={FILE_ID}"
 
 # Display the download URL we are testing
 st.info(f"Targeting URL: {gdrive_url}")
